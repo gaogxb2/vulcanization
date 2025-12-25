@@ -1,0 +1,532 @@
+import json
+import os
+import zipfile
+import shutil
+import pandas as pd
+import re
+from pathlib import Path
+from typing import List, Dict, Any
+
+
+class DataProcessor:
+    def __init__(self, config_path: str = None):
+        """
+        初始化数据处理器
+        
+        Args:
+            config_path: 配置文件路径，如果为None则使用默认路径
+        """
+        if config_path is None:
+            # 默认配置文件路径（与data_processor.py同目录）
+            config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        
+        self.config_path = config_path
+        self.config = self.load_config()
+        # 用于缓存文件内容和匹配结果，避免重复读取和匹配
+        self._file_cache = {}
+    
+    def load_config(self) -> Dict[str, Any]:
+        """加载配置文件"""
+        try:
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            return config
+        except FileNotFoundError:
+            # 如果配置文件不存在，返回默认配置
+            return {"path_keywords": []}
+        except json.JSONDecodeError as e:
+            raise ValueError(f"配置文件格式错误: {e}")
+    
+    def should_analyze(self, file_path: str, file_item: Path = None) -> bool:
+        """
+        判断文件路径是否应该被分析
+        只有当路径包含所有配置的关键词时才会被分析
+        如果配置了用于过滤的匹配项，还需要检查文件内容是否匹配
+        
+        Args:
+            file_path: 文件路径（相对路径或绝对路径）
+            file_item: 文件Path对象，用于读取文件内容（可选）
+            
+        Returns:
+            True表示应该分析，False表示跳过
+        """
+        path_keywords_config = self.config.get("path_keywords", {})
+        
+        # 检查路径关键词（只检查use_for_filter为true的关键词）
+        # 支持两种格式：对象格式 {"keyword": [...], "use_for_filter": true} 和字符串数组（向后兼容）
+        filter_keywords = []
+        if isinstance(path_keywords_config, dict):
+            # 对象格式：{"keyword": [...], "use_for_filter": true/false}
+            if path_keywords_config.get("use_for_filter", False):
+                keywords = path_keywords_config.get("keyword", [])
+                if isinstance(keywords, list):
+                    filter_keywords = [k for k in keywords if isinstance(k, str)]
+        elif isinstance(path_keywords_config, list):
+            # 字符串数组格式（向后兼容）：默认use_for_filter为true
+            filter_keywords = [k for k in path_keywords_config if isinstance(k, str)]
+        
+        # 检查路径中是否包含所有用于过滤的关键词
+        if filter_keywords:
+            file_path_lower = file_path.lower()
+            for keyword in filter_keywords:
+                if keyword and keyword.lower() not in file_path_lower:
+                    return False
+        
+        # 检查用于过滤的匹配项
+        extract_patterns = self.config.get("extract_patterns", [])
+        filter_patterns = [p for p in extract_patterns if p.get("use_for_filter", False)]
+        
+        if filter_patterns and file_item and file_item.is_file():
+            # 读取文件内容（使用缓存）
+            content = self._read_file_content(file_item)
+            if not content:
+                # 如果无法读取文件，跳过
+                return False
+            
+            # 检查每个用于过滤的匹配项
+            for pattern_config in filter_patterns:
+                found, matches = self._match_pattern(content, pattern_config)
+                if not found or not matches:
+                    # 没找到起始/结束字段，或者正则表达式没有匹配到任何内容，不分析
+                    return False
+        
+        return True
+    
+    def _read_file_content(self, file_path: Path) -> str:
+        """
+        读取文件内容，使用缓存避免重复读取
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            文件内容字符串，如果读取失败返回空字符串
+        """
+        file_key = str(file_path)
+        if file_key not in self._file_cache:
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    self._file_cache[file_key] = f.read()
+            except Exception:
+                self._file_cache[file_key] = ""
+        return self._file_cache[file_key]
+    
+    def _match_pattern(self, content: str, pattern_config: Dict[str, Any]) -> tuple:
+        """
+        对单个匹配项进行匹配
+        
+        Args:
+            content: 文件内容
+            pattern_config: 匹配项配置
+            
+        Returns:
+            (是否找到起始和结束字段, 匹配到的结果列表)
+        """
+        start_field = pattern_config.get("start_field", "")
+        end_field = pattern_config.get("end_field", "")
+        regex_pattern = pattern_config.get("regex", "")
+        
+        if not start_field or not end_field or not regex_pattern:
+            return (False, [])
+        
+        # 查找第一个起始字段和第一个结束字段之间的内容
+        start_idx = content.find(start_field)
+        if start_idx == -1:
+            return (False, [])
+        
+        # 从起始字段之后开始查找结束字段
+        search_start = start_idx + len(start_field)
+        end_idx = content.find(end_field, search_start)
+        if end_idx == -1:
+            return (False, [])
+        
+        # 提取起始字段和结束字段之间的内容
+        extracted_content = content[search_start:end_idx]
+        
+        # 使用正则表达式提取匹配的数字
+        matches = re.findall(regex_pattern, extracted_content)
+        # re.findall返回的是捕获组的内容列表（如果只有一个捕获组，返回字符串列表）
+        # 如果正则表达式有多个捕获组，返回元组列表；如果只有一个捕获组，返回字符串列表
+        if matches and isinstance(matches[0], tuple):
+            numbers = [str(match[0]) for match in matches]
+        else:
+            numbers = [str(match) for match in matches]
+        print("numbers:",numbers)
+        return (True, numbers)
+    
+    def _match_secondary_pattern(self, content: str, number: str, secondary_config: Dict[str, Any]) -> List[str]:
+        """
+        对每个数字进行二次匹配
+        
+        Args:
+            content: 文件内容
+            number: 要匹配的数字
+            secondary_config: 二次匹配配置，包含start_field, end_field, regex
+            
+        Returns:
+            匹配到的结果列表
+        """
+        if not secondary_config:
+            return []
+        
+        start_field = secondary_config.get("start_field", "")
+        end_field = secondary_config.get("end_field", "")
+        regex_template = secondary_config.get("regex", "")
+        
+        if not start_field or not end_field or not regex_template:
+            return []
+        
+        # 替换 start_field 和 end_field 中的 {number} 占位符
+        start_field = start_field.replace("{number}", number)
+        end_field = end_field.replace("{number}", number)
+        
+        # 找到段落
+        print("start_field:",start_field)
+        start_idx = content.find(start_field)
+        print("start_idx:",start_idx)
+        if start_idx == -1:
+            return []
+        
+        # 从起始字段之后开始查找结束字段
+        search_start = start_idx + len(start_field)
+        print("search_start:",search_start)
+        end_idx = content.find(end_field, search_start)
+        print("end_idx:",end_idx)
+        if end_idx == -1:
+            return []
+        
+        # 提取段落内容
+        paragraph_content = content[search_start:end_idx]
+        
+        # 将正则表达式模板中的 {number} 替换为实际数字（转义）
+        regex_pattern = regex_template.replace("{number}", re.escape(number))
+        print(regex_pattern,paragraph_content)
+        # 检查是否需要使用 DOTALL 标志（如果正则表达式中包含 .* 等需要匹配换行符的模式）
+        use_dotall = secondary_config.get("use_dotall", False)
+        if not use_dotall and ('.*' in regex_template or '.+?' in regex_template):
+            use_dotall = True
+        
+        # 执行匹配
+        if use_dotall:
+            matches = re.findall(regex_pattern, paragraph_content, re.DOTALL)
+        else:
+            matches = re.findall(regex_pattern, paragraph_content)
+
+        # 返回匹配到的结果，如果没有匹配到则返回空列表
+        if not matches:
+            print("no matches")
+            return []
+        print("matches:",matches)
+        
+        # 检查是否只匹配第一个结果
+        match_all = secondary_config.get("match_all", False)  # 默认只匹配第一个
+        
+        # 处理多个捕获组的情况
+        if isinstance(matches[0], tuple):
+            # 如果有多个捕获组，将所有捕获组用空格连接
+            results = [' '.join(str(m) for m in match) for match in matches]
+        else:
+            # 如果只有一个捕获组，直接返回
+            results = [str(match) for match in matches]
+        
+        # 如果 match_all 为 False，只返回第一个结果
+        if not match_all and results:
+            return [results[0]]
+        
+        return results
+    
+    def extract_pattern_from_file(self, file_path: Path) -> Dict[str, Any]:
+        """
+        从文件中提取匹配模式的内容
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            包含提取结果的字典，键为模式名称，值为匹配到的数字列表
+        """
+        result = {}
+        extract_patterns = self.config.get("extract_patterns", [])
+        
+        if not extract_patterns:
+            return result
+        
+        # 读取文件内容（使用缓存，避免重复读取）
+        content = self._read_file_content(file_path)
+        if not content:
+            # 如果无法读取文件，返回空结果
+            return result
+        
+        # 处理每个提取模式
+        for pattern_config in extract_patterns:
+            start_field = pattern_config.get("start_field", "")
+            end_field = pattern_config.get("end_field", "")
+            
+            found, numbers = self._match_pattern(content, pattern_config)
+            if not found or not numbers:
+                result[f"{start_field}_{end_field}"] = []
+                continue
+            
+            # 对每个数字进行二次、三次、四次匹配（如果配置了）
+            final_results = []
+            secondary_config = pattern_config.get("secondary_match", None)
+            third_config = pattern_config.get("third_match", None)
+            fourth_config = pattern_config.get("fourth_match", None)
+            
+            for number in numbers:
+                # 收集所有匹配结果
+                all_matches = []
+                
+                # 进行二次匹配
+                if secondary_config:
+                    secondary_matches = self._match_secondary_pattern(content, number, secondary_config)
+                    if secondary_matches:
+                        all_matches.extend(secondary_matches)
+                
+                # 进行三次匹配
+                if third_config:
+                    third_matches = self._match_secondary_pattern(content, number, third_config)
+                    if third_matches:
+                        all_matches.extend(third_matches)
+                
+                # 进行四次匹配
+                if fourth_config:
+                    fourth_matches = self._match_secondary_pattern(content, number, fourth_config)
+                    if fourth_matches:
+                        all_matches.extend(fourth_matches)
+                
+                # 根据匹配结果决定输出格式
+                if all_matches:
+                    # 如果有匹配结果，格式：数字 -> 匹配结果1 | 匹配结果2
+                    match_str = " | ".join(all_matches)
+                    final_results.append(f"{number} -> {match_str}")
+                else:
+                    # 如果没有任何匹配结果，仍然保留原始数字
+                    final_results.append(number)
+            
+            result[f"{start_field}_{end_field}"] = final_results
+        
+        return result
+    
+    def extract_zip_recursive(self, zip_path: Path, extract_to: Path):
+        """
+        递归解压zip文件（逐层解压，不需要额外创建新文件夹）
+        
+        Args:
+            zip_path: zip文件路径
+            extract_to: 解压目标路径（直接解压到此目录）
+        """
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_to)
+            
+            # 删除已解压的zip文件
+            zip_path.unlink()
+            
+            # 收集解压后目录中的所有zip文件（避免在遍历时修改目录结构）
+            zip_files = []
+            for item in extract_to.rglob('*.zip'):
+                if item.is_file():
+                    zip_files.append(item)
+            
+            # 递归解压所有找到的zip文件
+            for zip_file in zip_files:
+                # 逐层解压：直接解压到zip文件所在目录，不创建新文件夹
+                self.extract_zip_recursive(zip_file, zip_file.parent)
+        except (zipfile.BadZipFile, PermissionError, OSError) as e:
+            # 跳过损坏的zip文件或权限错误
+            pass
+    
+    def process_zip_files(self, folder_path: str):
+        """
+        处理文件夹中的zip文件，进行解压
+        
+        Args:
+            folder_path: 要处理的文件夹路径
+        """
+        folder = Path(folder_path)
+        
+        # 收集所有zip文件（避免在遍历时修改目录结构）
+        zip_files = []
+        for item in folder.rglob('*.zip'):
+            if item.is_file():
+                zip_files.append(item)
+        
+        # 解压每个zip文件
+        for zip_file in zip_files:
+            try:
+                # 第一层解压：创建与压缩包同名的文件夹
+                zip_name_without_ext = zip_file.stem
+                extract_folder = zip_file.parent / zip_name_without_ext
+                
+                # 如果文件夹已存在，添加序号
+                counter = 1
+                original_extract_folder = extract_folder
+                while extract_folder.exists():
+                    extract_folder = original_extract_folder.parent / f"{zip_name_without_ext}_{counter}"
+                    counter += 1
+                
+                extract_folder.mkdir(parents=True, exist_ok=True)
+                
+                # 第一层解压到新创建的文件夹
+                with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+                    zip_ref.extractall(extract_folder)
+                
+                # 删除原始zip文件
+                zip_file.unlink()
+                
+                # 检查解压后的文件夹中是否有zip文件，如果有则递归解压
+                nested_zip_files = []
+                for item in extract_folder.rglob('*.zip'):
+                    if item.is_file():
+                        nested_zip_files.append(item)
+                
+                # 递归解压所有嵌套的zip文件（逐层解压，不创建新文件夹）
+                for nested_zip in nested_zip_files:
+                    self.extract_zip_recursive(nested_zip, nested_zip.parent)
+            except (PermissionError, OSError, zipfile.BadZipFile) as e:
+                # 跳过无法处理的zip文件
+                continue
+    
+    def analyze_folder(self, folder_path: str, extract_zip: bool = False) -> pd.DataFrame:
+        """
+        分析文件夹内容
+        
+        Args:
+            folder_path: 要分析的文件夹路径
+            extract_zip: 是否解压zip文件
+            
+        Returns:
+            包含分析结果的DataFrame
+        """
+        # 清空缓存，开始新的分析
+        self._file_cache.clear()
+        
+        # 如果需要解压zip文件，先处理zip文件
+        if extract_zip:
+            self.process_zip_files(folder_path)
+        
+        data = []
+        folder = Path(folder_path)
+        
+        for item in folder.rglob('*'):
+            try:
+                # 获取相对路径用于关键词匹配
+                relative_path = str(item.relative_to(folder))
+                
+                # 检查是否应该分析此文件（传入Path对象以便检查文件内容）
+                if not self.should_analyze(relative_path, item):
+                    print(f"跳过文件: {relative_path}")
+                    continue
+                else:
+                    print(f"分析文件: {relative_path}")
+                
+                if item.is_file():
+                    stat = item.stat()
+                    # 提取匹配模式的内容
+                    extracted_data = self.extract_pattern_from_file(item)
+                    
+                    # 构建文件基本信息
+                    base_file_data = {
+                        '文件路径': relative_path,
+                        '文件名': item.name,
+                        '文件类型': item.suffix or '无扩展名',
+                        '文件大小(字节)': stat.st_size,
+                        '文件大小(MB)': round(stat.st_size / (1024 * 1024), 2),
+                        '修改时间': pd.Timestamp.fromtimestamp(stat.st_mtime),
+                        '是否文件': '是',
+                        '是否目录': '否'
+                    }
+                    
+                    # 如果没有任何匹配项，仍然添加一行（不包含匹配数据）
+                    if not extracted_data:
+                        data.append(base_file_data.copy())
+                    else:
+                        # 收集所有匹配项的所有numbers
+                        all_numbers = []
+                        pattern_names = []
+                        
+                        for pattern_name, numbers in extracted_data.items():
+                            if numbers:  # 如果有匹配到的numbers
+                                for number in numbers:
+                                    all_numbers.append(number)
+                                    pattern_names.append(pattern_name)
+                        
+                        # 如果没有任何匹配到的numbers，添加一行基本信息
+                        if not all_numbers:
+                            data.append(base_file_data.copy())
+                        else:
+                            # 为每个number创建一行
+                            for number, pattern_name in zip(all_numbers, pattern_names):
+                                row_data = base_file_data.copy()
+                                row_data['匹配项'] = pattern_name
+                                row_data['匹配值'] = number
+                                data.append(row_data)
+                elif item.is_dir():
+                    data.append({
+                        '文件路径': relative_path,
+                        '文件名': item.name,
+                        '文件类型': '目录',
+                        '文件大小(字节)': 0,
+                        '文件大小(MB)': 0,
+                        '修改时间': pd.Timestamp.fromtimestamp(item.stat().st_mtime),
+                        '是否文件': '否',
+                        '是否目录': '是'
+                    })
+            except (PermissionError, OSError):
+                # 跳过无法访问的文件
+                continue
+        
+        return pd.DataFrame(data)
+    
+    def save_to_excel(self, df: pd.DataFrame, output_path: str) -> None:
+        """
+        将DataFrame保存为Excel文件
+        
+        Args:
+            df: 要保存的DataFrame
+            output_path: 输出文件路径
+        """
+        if df.empty:
+            raise ValueError("数据为空，无法保存")
+        
+        df.to_excel(output_path, index=False, engine='openpyxl')
+
+
+def main():
+    """主函数：直接运行此文件时自动分析指定目录"""
+    # 要分析的目录路径
+    folder_path = "/Users/xianbo/vulcanization/vulcanization/logs/test"
+    
+    # 输出Excel文件路径（与分析目录同目录）
+    output_path = os.path.join(folder_path, "分析结果.xlsx")
+    
+    print(f"开始分析目录: {folder_path}")
+    
+    try:
+        # 创建数据处理器
+        processor = DataProcessor()
+        
+        # 分析文件夹（不自动解压zip，如需解压可设置 extract_zip=True）
+        df = processor.analyze_folder(folder_path, extract_zip=False)
+        
+        if df.empty:
+            print("警告: 没有找到符合条件的文件！")
+            print("请检查配置文件中的关键词设置。")
+            return
+        
+        # 保存到Excel
+        processor.save_to_excel(df, output_path)
+        
+        print(f"分析完成！共分析 {len(df)} 个项目")
+        print(f"Excel文件已保存到: {output_path}")
+        
+    except Exception as e:
+        print(f"分析过程中出现错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    main()
+

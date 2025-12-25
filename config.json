@@ -1,0 +1,40 @@
+{
+    "path_keywords": {
+        "keyword": [
+            "工程师报告",
+            ".txt"
+        ],
+        "use_for_filter": true
+    },
+    "description": "文件路径中包含这些关键词的文件才会被分析。如果列表为空，则分析所有文件。",
+    "extract_patterns": [
+        {
+            "start_field": "display device",
+            "end_field": "</Message>",
+            "regex": "(\\d+)\\s+(?:D1|E1)",
+            "description": "提取display device和<Message>之间的数字（后跟空格和D1或E1）",
+            "use_for_filter": true,
+            "secondary_match": {
+                "start_field": "display elabel brief",
+                "end_field": "</Message>",
+                "regex": "MPU{number}\\s+([A-Za-z0-9]+)\\s+([A-Za-z0-9]+)\\s+([A-Za-z0-9]+)",
+                "description": "对每个数字进行二次匹配，在display elabel brief和</Message>之间匹配MPU+数字+空格+字母数字"
+            },
+            "third_match": {
+                "start_field": "display board-reset",
+                "end_field": "</Message>",
+                "regex": "Board {number} reset information:\\r?\\n.*DATE:(\\d+-\\d+-\\d+)",
+                "description": "对每个数字进行二次匹配，在display elabel brief和</Message>之间匹配MPU+数字+空格+字母数字"
+            },
+            "fourth_match": {
+                "start_field": "{number} module cpu_serdes_info",
+                "end_field": "</Message>",
+                "regex": "(macro\\d,ds\\d)\\r?\\n.*\\r?\\n.*\\r?\\nDS_TX:\\s*(?:[A-Za-z0-9]+\\s*,\\s*){26}([A-Za-z0-9]+)",
+                "match_all": true,
+                "description": "匹配macro和ds，然后在DX_TX:后面匹配第21个逗号分隔的字母数字字符串"
+            }
+        }
+    ]
+}
+
+
