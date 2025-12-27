@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import zipfile
 import shutil
 import pandas as pd
@@ -18,7 +19,17 @@ class DataProcessor:
         """
         if config_path is None:
             # 默认配置文件路径（与data_processor.py同目录）
-            config_path = os.path.join(os.path.dirname(__file__), "config.json")
+            # 支持 PyInstaller 打包后的路径
+            if getattr(sys, 'frozen', False):
+                # 如果是打包后的exe，使用sys._MEIPASS获取临时目录
+                base_path = sys._MEIPASS
+            else:
+                # 如果是普通运行，使用__file__所在目录
+                base_path = os.path.dirname(__file__)
+            config_path = os.path.join(base_path, "vulcanization", "config.json")
+            # 如果上面的路径不存在，尝试直接在同目录查找
+            if not os.path.exists(config_path):
+                config_path = os.path.join(base_path, "config.json")
         
         self.config_path = config_path
         self.config = self.load_config()
