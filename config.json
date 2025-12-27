@@ -20,18 +20,37 @@
                 "regex": "MPU{number}\\s+([A-Za-z0-9]+)\\s+([A-Za-z0-9]+)\\s+([A-Za-z0-9]+)",
                 "description": "对每个数字进行二次匹配，在display elabel brief和</Message>之间匹配MPU+数字+空格+字母数字"
             },
+            "match_version": {
+                "start_field": "display startup",
+                "end_field": "</Message>",
+                "regex": "R\\d\\d",
+                "description": "匹配版本号"
+            },
             "third_match": {
                 "start_field": "display board-reset",
                 "end_field": "</Message>",
-                "regex": "Board {number} reset information:\\r?\\n.*DATE:(\\d+-\\d+-\\d+)",
+                "regex": "Board {number} reset information:\\r?\\n.*(DATE:\\d+-\\d+-\\d+)",
                 "description": "对每个数字进行二次匹配，在display elabel brief和</Message>之间匹配MPU+数字+空格+字母数字"
             },
-            "fourth_match": {
-                "start_field": "{number} module cpu_serdes_info",
+            "third_match_2": {
+                "start_field": "display clock | no more",
                 "end_field": "</Message>",
-                "regex": "(macro\\d,ds\\d)\\r?\\n.*\\r?\\n.*\\r?\\nDS_TX:\\s*(?:[A-Za-z0-9]+\\s*,\\s*){26}([A-Za-z0-9]+)",
+                "regex": "(\\d+-\\d+-\\d+)",
+                "description": "V8R24对每个数字进行二次匹配，提取日期"
+            },
+            "fourth_match": {
+                "start_field": " {number} module cpu_serdes_info",
+                "end_field": "</Message>",
+                "regex": "(macro\\d,ds\\d)\\r?\\n.*?\\r?\\n.*?\\r?\\nDS_TX:\\s*(?:[A-Za-z0-9]+\\s*,\\s*){26}([A-Za-z0-9]+)",
                 "match_all": true,
                 "description": "匹配macro和ds，然后在DX_TX:后面匹配第21个逗号分隔的字母数字字符串"
+            },
+            "fifth_match": {
+                "start_field": "serdes slot {number} ",
+                "end_field": "</Message>",
+                "regex": "(macro \\d lane \\d): code-up:(0x\\d+)",
+                "match_all": true,
+                "description": "匹配macro和lane 后面匹配字符串"
             }
         }
     ]

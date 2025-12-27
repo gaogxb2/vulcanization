@@ -200,7 +200,8 @@ class DataProcessor:
         
         # 将正则表达式模板中的 {number} 替换为实际数字（转义）
         regex_pattern = regex_template.replace("{number}", re.escape(number))
-        print(regex_pattern,paragraph_content)
+        print("regex_pattern:", regex_pattern)
+        print("paragraph_content length:", len(paragraph_content))
         # 检查是否需要使用 DOTALL 标志（如果正则表达式中包含 .* 等需要匹配换行符的模式）
         use_dotall = secondary_config.get("use_dotall", False)
         if not use_dotall and ('.*' in regex_template or '.+?' in regex_template):
@@ -211,6 +212,7 @@ class DataProcessor:
             matches = re.findall(regex_pattern, paragraph_content, re.DOTALL)
         else:
             matches = re.findall(regex_pattern, paragraph_content)
+        print("total matches found:", len(matches))
 
         # 返回匹配到的结果，如果没有匹配到则返回空列表
         if not matches:
@@ -220,6 +222,7 @@ class DataProcessor:
         
         # 检查是否只匹配第一个结果
         match_all = secondary_config.get("match_all", False)  # 默认只匹配第一个
+        print("match_all setting:", match_all)
         
         # 处理多个捕获组的情况
         if isinstance(matches[0], tuple):
@@ -235,6 +238,80 @@ class DataProcessor:
         
         return results
     
+    def _match_secondary_pattern_detailed(self, content: str, number: str, secondary_config: Dict[str, Any]) -> List[List[str]]:
+        """
+        对每个数字进行二次匹配，返回详细的匹配结果（保留多个捕获组）
+        
+        Args:
+            content: 文件内容
+            number: 要匹配的数字
+            secondary_config: 二次匹配配置，包含start_field, end_field, regex
+            
+        Returns:
+            匹配到的结果列表，每个结果是一个列表（多个捕获组）或字符串（单个捕获组）
+        """
+        if not secondary_config:
+            return []
+        
+        start_field = secondary_config.get("start_field", "")
+        end_field = secondary_config.get("end_field", "")
+        regex_template = secondary_config.get("regex", "")
+        
+        if not start_field or not end_field or not regex_template:
+            return []
+        
+        # 替换 start_field 和 end_field 中的 {number} 占位符
+        start_field = start_field.replace("{number}", number)
+        end_field = end_field.replace("{number}", number)
+        
+        # 找到段落
+        start_idx = content.find(start_field)
+        if start_idx == -1:
+            return []
+        
+        # 从起始字段之后开始查找结束字段
+        search_start = start_idx + len(start_field)
+        end_idx = content.find(end_field, search_start)
+        if end_idx == -1:
+            return []
+        
+        # 提取段落内容
+        paragraph_content = content[search_start:end_idx]
+        
+        # 将正则表达式模板中的 {number} 替换为实际数字（转义）
+        regex_pattern = regex_template.replace("{number}", re.escape(number))
+        
+        # 检查是否需要使用 DOTALL 标志
+        use_dotall = secondary_config.get("use_dotall", False)
+        if not use_dotall and ('.*' in regex_template or '.+?' in regex_template):
+            use_dotall = True
+        
+        # 执行匹配
+        if use_dotall:
+            matches = re.findall(regex_pattern, paragraph_content, re.DOTALL)
+        else:
+            matches = re.findall(regex_pattern, paragraph_content)
+        
+        if not matches:
+            return []
+        
+        # 检查是否只匹配第一个结果
+        match_all = secondary_config.get("match_all", False)
+        
+        # 处理多个捕获组的情况，保留原始结构
+        if isinstance(matches[0], tuple):
+            # 如果有多个捕获组，返回元组列表转换为列表列表
+            results = [[str(m) for m in match] for match in matches]
+        else:
+            # 如果只有一个捕获组，每个结果包装成列表
+            results = [[str(match)] for match in matches]
+        
+        # 如果 match_all 为 False，只返回第一个结果
+        if not match_all and results:
+            return [results[0]]
+        
+        return results
+    
     def extract_pattern_from_file(self, file_path: Path) -> Dict[str, Any]:
         """
         从文件中提取匹配模式的内容
@@ -243,7 +320,7 @@ class DataProcessor:
             file_path: 文件路径
             
         Returns:
-            包含提取结果的字典，键为模式名称，值为匹配到的数字列表
+            包含提取结果的字典，键为模式名称，值为包含详细匹配信息的列表
         """
         result = {}
         extract_patterns = self.config.get("extract_patterns", [])
@@ -267,42 +344,81 @@ class DataProcessor:
                 result[f"{start_field}_{end_field}"] = []
                 continue
             
-            # 对每个数字进行二次、三次、四次匹配（如果配置了）
+            # 对每个数字进行二次、三次、三次匹配2、四次、五次匹配、版本匹配（如果配置了）
             final_results = []
             secondary_config = pattern_config.get("secondary_match", None)
             third_config = pattern_config.get("third_match", None)
+            third_config_2 = pattern_config.get("third_match_2", None)
             fourth_config = pattern_config.get("fourth_match", None)
+            fifth_config = pattern_config.get("fifth_match", None)
+            match_version_config = pattern_config.get("match_version", None)
             
             for number in numbers:
-                # 收集所有匹配结果
-                all_matches = []
+                # 存储每个匹配项的详细结果
+                match_data = {
+                    "number": number,
+                    "secondary_match": [],
+                    "match_version": [],
+                    "third_match": [],
+                    "third_match_2": [],
+                    "fourth_match": [],
+                    "fifth_match": []
+                }
                 
-                # 进行二次匹配
+                # 进行二次匹配（保留多个捕获组）
                 if secondary_config:
-                    secondary_matches = self._match_secondary_pattern(content, number, secondary_config)
+                    secondary_matches = self._match_secondary_pattern_detailed(content, number, secondary_config)
                     if secondary_matches:
-                        all_matches.extend(secondary_matches)
+                        # secondary_match可能有多个匹配，每个匹配可能有多个捕获组
+                        # 取第一个匹配的所有捕获组
+                        if secondary_matches and secondary_matches[0]:
+                            match_data["secondary_match"] = secondary_matches[0]
+                
+                # 进行版本匹配
+                if match_version_config:
+                    version_matches = self._match_secondary_pattern_detailed(content, number, match_version_config)
+                    if version_matches:
+                        # 取第一个匹配的第一个捕获组
+                        if version_matches and version_matches[0]:
+                            match_data["match_version"] = version_matches[0]
                 
                 # 进行三次匹配
                 if third_config:
-                    third_matches = self._match_secondary_pattern(content, number, third_config)
+                    third_matches = self._match_secondary_pattern_detailed(content, number, third_config)
                     if third_matches:
-                        all_matches.extend(third_matches)
+                        if third_matches and third_matches[0]:
+                            match_data["third_match"] = third_matches[0]
+                
+                # 进行三次匹配2
+                if third_config_2:
+                    third_matches_2 = self._match_secondary_pattern_detailed(content, number, third_config_2)
+                    if third_matches_2:
+                        if third_matches_2 and third_matches_2[0]:
+                            match_data["third_match_2"] = third_matches_2[0]
                 
                 # 进行四次匹配
                 if fourth_config:
-                    fourth_matches = self._match_secondary_pattern(content, number, fourth_config)
+                    fourth_matches = self._match_secondary_pattern_detailed(content, number, fourth_config)
                     if fourth_matches:
-                        all_matches.extend(fourth_matches)
+                        # 如果match_all为True，保留所有匹配，否则只取第一个
+                        if fourth_config.get("match_all", False):
+                            match_data["fourth_match"] = [" | ".join(" ".join(str(m) for m in match) for match in fourth_matches)]
+                        else:
+                            if fourth_matches and fourth_matches[0]:
+                                match_data["fourth_match"] = fourth_matches[0]
                 
-                # 根据匹配结果决定输出格式
-                if all_matches:
-                    # 如果有匹配结果，格式：数字 -> 匹配结果1 | 匹配结果2
-                    match_str = " | ".join(all_matches)
-                    final_results.append(f"{number} -> {match_str}")
-                else:
-                    # 如果没有任何匹配结果，仍然保留原始数字
-                    final_results.append(number)
+                # 进行五次匹配
+                if fifth_config:
+                    fifth_matches = self._match_secondary_pattern_detailed(content, number, fifth_config)
+                    if fifth_matches:
+                        # 如果match_all为True，保留所有匹配，否则只取第一个
+                        if fifth_config.get("match_all", False):
+                            match_data["fifth_match"] = [" | ".join(" ".join(str(m) for m in match) for match in fifth_matches)]
+                        else:
+                            if fifth_matches and fifth_matches[0]:
+                                match_data["fifth_match"] = fifth_matches[0]
+                
+                final_results.append(match_data)
             
             result[f"{start_field}_{end_field}"] = final_results
         
@@ -442,26 +558,54 @@ class DataProcessor:
                     if not extracted_data:
                         data.append(base_file_data.copy())
                     else:
-                        # 收集所有匹配项的所有numbers
-                        all_numbers = []
-                        pattern_names = []
-                        
-                        for pattern_name, numbers in extracted_data.items():
-                            if numbers:  # 如果有匹配到的numbers
-                                for number in numbers:
-                                    all_numbers.append(number)
-                                    pattern_names.append(pattern_name)
-                        
-                        # 如果没有任何匹配到的numbers，添加一行基本信息
-                        if not all_numbers:
-                            data.append(base_file_data.copy())
-                        else:
-                            # 为每个number创建一行
-                            for number, pattern_name in zip(all_numbers, pattern_names):
+                        # 处理每个匹配模式的结果
+                        has_match_data = False
+                        for pattern_name, match_data_list in extracted_data.items():
+                            if not match_data_list:  # 如果没有匹配到的数据
+                                continue
+                            
+                            has_match_data = True
+                            # 为每个匹配数据创建一行
+                            for match_data in match_data_list:
                                 row_data = base_file_data.copy()
                                 row_data['匹配项'] = pattern_name
-                                row_data['匹配值'] = number
+                                row_data['匹配值'] = match_data.get("number", "")
+                                
+                                # 处理secondary_match，分成三列：条码1、条码2、条码3
+                                secondary_match = match_data.get("secondary_match", [])
+                                row_data['条码1'] = secondary_match[0] if len(secondary_match) > 0 else ""
+                                row_data['条码2'] = secondary_match[1] if len(secondary_match) > 1 else ""
+                                row_data['条码3'] = secondary_match[2] if len(secondary_match) > 2 else ""
+                                
+                                # 处理match_version，列名叫版本号
+                                match_version = match_data.get("match_version", [])
+                                version_str = match_version[0] if len(match_version) > 0 else ""
+                                row_data['版本号'] = version_str
+                                
+                                # 根据版本号决定时间和code列
+                                if version_str == "R24":
+                                    # 如果版本号是R24：
+                                    # third_match_2的列名叫做时间
+                                    third_match_2 = match_data.get("third_match_2", [])
+                                    row_data['时间'] = " ".join(third_match_2) if third_match_2 else ""
+                                    # fourth_match作为code
+                                    fourth_match = match_data.get("fourth_match", [])
+                                    row_data['code'] = " ".join(fourth_match) if fourth_match else ""
+                                    # 忽略third_match
+                                else:
+                                    # 如果版本号不为R24：
+                                    # third_match的列名叫做时间
+                                    third_match = match_data.get("third_match", [])
+                                    row_data['时间'] = " ".join(third_match) if third_match else ""
+                                    # fifth_match作为code
+                                    fifth_match = match_data.get("fifth_match", [])
+                                    row_data['code'] = " ".join(fifth_match) if fifth_match else ""
+                                
                                 data.append(row_data)
+                        
+                        # 如果没有任何匹配数据，添加一行基本信息
+                        if not has_match_data:
+                            data.append(base_file_data.copy())
                 elif item.is_dir():
                     data.append({
                         '文件路径': relative_path,
