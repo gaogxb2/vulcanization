@@ -312,6 +312,85 @@ class DataProcessor:
         
         return results
     
+    def _format_fourth_match(self, fourth_match: List[str]) -> str:
+        """
+        格式化fourth_match的结果
+        输入格式1（match_all=False）：["macroX,dsY", "0xZ"]
+        输入格式2（match_all=True）：["macroX,dsY 0xZ | macroX2,dsY2 0xZ2 | ..."]
+        输出格式：f"macroX laneY 0xP"，其中0xP是0xZ的bit0-5的值
+        如果有多个匹配，用 " | " 连接
+        
+        Args:
+            fourth_match: fourth_match的匹配结果列表
+            
+        Returns:
+            格式化后的字符串
+        """
+        if not fourth_match:
+            return ""
+        
+        # 如果只有一个元素且包含 " | "，说明是match_all=True的情况
+        if len(fourth_match) == 1 and " | " in fourth_match[0]:
+            # 分割多个匹配
+            matches_str = fourth_match[0].split(" | ")
+            formatted_matches = []
+            for match_str in matches_str:
+                # 每个匹配格式：macroX,dsY 0xZ
+                parts = match_str.strip().split()
+                if len(parts) >= 2:
+                    macro_ds = parts[0]  # macroX,dsY
+                    hex_str = parts[1]   # 0xZ
+                    formatted = self._format_single_fourth_match(macro_ds, hex_str)
+                    if formatted:
+                        formatted_matches.append(formatted)
+            return " | ".join(formatted_matches) if formatted_matches else ""
+        
+        # 如果是两个元素，说明是match_all=False的情况
+        if len(fourth_match) >= 2:
+            macro_ds = fourth_match[0]  # macroX,dsY
+            hex_str = fourth_match[1]   # 0xZ
+            return self._format_single_fourth_match(macro_ds, hex_str) or " ".join(fourth_match)
+        
+        return " ".join(fourth_match)
+    
+    def _format_single_fourth_match(self, macro_ds: str, hex_str: str) -> str:
+        """
+        格式化单个fourth_match结果
+        
+        Args:
+            macro_ds: "macroX,dsY" 格式的字符串
+            hex_str: "0xZ" 格式的十六进制字符串
+            
+        Returns:
+            格式化后的字符串：f"macroX laneY 0xP"
+        """
+        # 解析macroX,dsY
+        macro_match = re.search(r'macro(\d+)', macro_ds)
+        ds_match = re.search(r'ds(\d+)', macro_ds)
+        
+        if not macro_match or not ds_match:
+            return ""
+        
+        macro_num = macro_match.group(1)
+        ds_num = ds_match.group(1)
+        
+        # 解析十六进制数
+        try:
+            # 转换为整数
+            if hex_str.startswith('0x') or hex_str.startswith('0X'):
+                hex_value = int(hex_str, 16)
+            else:
+                # 如果不是十六进制格式，尝试直接转换
+                hex_value = int(hex_str, 16) if all(c in '0123456789ABCDEFabcdef' for c in hex_str) else int(hex_str)
+            
+            # 提取bit0-5（即对0x3F进行按位与操作）
+            bit0_5_value = hex_value & 0x3F
+            
+            # 格式化输出：macroX laneY 0xP
+            return f"macro{macro_num} lane{ds_num} 0x{bit0_5_value:X}"
+        except (ValueError, TypeError):
+            return ""
+    
     def extract_pattern_from_file(self, file_path: Path) -> Dict[str, Any]:
         """
         从文件中提取匹配模式的内容
@@ -583,23 +662,23 @@ class DataProcessor:
                                 row_data['版本号'] = version_str
                                 
                                 # 根据版本号决定时间和code列
-                                if version_str == "R24":
-                                    # 如果版本号是R24：
+                                if version_str == "R024":
+                                    # 如果版本号是R024：
                                     # third_match_2的列名叫做时间
                                     third_match_2 = match_data.get("third_match_2", [])
                                     row_data['时间'] = " ".join(third_match_2) if third_match_2 else ""
-                                    # fourth_match作为code
-                                    fourth_match = match_data.get("fourth_match", [])
-                                    row_data['code'] = " ".join(fourth_match) if fourth_match else ""
-                                    # 忽略third_match
-                                else:
-                                    # 如果版本号不为R24：
-                                    # third_match的列名叫做时间
-                                    third_match = match_data.get("third_match", [])
-                                    row_data['时间'] = " ".join(third_match) if third_match else ""
                                     # fifth_match作为code
                                     fifth_match = match_data.get("fifth_match", [])
                                     row_data['code'] = " ".join(fifth_match) if fifth_match else ""
+                                    # 忽略third_match
+                                else:
+                                    # 如果版本号不为R024：
+                                    # third_match的列名叫做时间
+                                    third_match = match_data.get("third_match", [])
+                                    row_data['时间'] = " ".join(third_match) if third_match else ""
+                                    # fourth_match作为code，需要格式化
+                                    fourth_match = match_data.get("fourth_match", [])
+                                    row_data['code'] = self._format_fourth_match(fourth_match) if fourth_match else ""
                                 
                                 data.append(row_data)
                         
