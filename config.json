@@ -33,7 +33,7 @@
                 "description": "对每个数字进行二次匹配，在display elabel brief和</Message>之间匹配MPU+数字+空格+字母数字"
             },
             "third_match_2": {
-                "start_field": "display clock | no more",
+                "start_field": "display clock | no-more",
                 "end_field": "</Message>",
                 "regex": "(\\d+-\\d+-\\d+)",
                 "description": "V8R24对每个数字进行二次匹配，提取日期"
@@ -48,9 +48,17 @@
             "fifth_match": {
                 "start_field": "serdes slot {number} ",
                 "end_field": "</Message>",
-                "regex": "(macro \\d lane \\d): code-up:(0x\\d+)",
+                "regex": "(macro \\d lane \\d): code-up:(0x[0-9A-Za-z]+)",
                 "match_all": true,
                 "description": "匹配macro和lane 后面匹配字符串"
+            },
+            "sixth_match": {
+                "start_field": "display temperature | no-more",
+                "end_field": "</Message>",
+                "regex": "Base-Board, Unit:[a-zA-Z]+, Slot {number}\\r?\\n-+\\r?\\n.*\\r?\\n-+\\r?\\n([\\s\\S])-+",
+                "match_all": true,
+                "only_replace_in_regex": true,
+                "description": "匹配温度"
             }
         }
     ]

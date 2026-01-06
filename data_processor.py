@@ -271,9 +271,13 @@ class DataProcessor:
         if not start_field or not end_field or not regex_template:
             return []
         
-        # 替换 start_field 和 end_field 中的 {number} 占位符
-        start_field = start_field.replace("{number}", number)
-        end_field = end_field.replace("{number}", number)
+        # 检查是否只替换 regex 中的 {number}（不替换 start_field 中的）
+        only_replace_in_regex = secondary_config.get("only_replace_in_regex", False)
+        
+        # 替换 start_field 和 end_field 中的 {number} 占位符（除非配置了 only_replace_in_regex）
+        if not only_replace_in_regex:
+            start_field = start_field.replace("{number}", number)
+            end_field = end_field.replace("{number}", number)
         
         # 找到段落
         start_idx = content.find(start_field)
@@ -364,6 +368,28 @@ class DataProcessor:
         
         return " ".join(fourth_match)
     
+    def _check_code_contains_hex_range(self, code: str) -> int:
+        """
+        检查 code 中是否包含 0x1 到 0x16 之间的任意值
+        
+        Args:
+            code: code 字符串
+            
+        Returns:
+            如果包含 0x1 到 0x16 之间的任意值返回 1，否则返回 0
+        """
+        if not code:
+            return 0
+        
+        # 匹配 0x1 到 0x16 之间的十六进制值
+        # 0x1, 0x2, ..., 0x9, 0xa, 0xb, ..., 0xf, 0x10, 0x11, ..., 0x16
+        # 使用正则表达式匹配这些值（不区分大小写）
+        # 使用负向前瞻确保后面不是十六进制字符，避免匹配 0x1a 中的 0x1
+        pattern = r'0x(?:1[0-6]|[1-9a-fA-F])(?![\da-fA-F])'
+        if re.search(pattern, code, re.IGNORECASE):
+            return 1
+        return 0
+    
     def _format_single_fourth_match(self, macro_ds: str, hex_str: str) -> str:
         """
         格式化单个fourth_match结果
@@ -434,13 +460,14 @@ class DataProcessor:
                 result[f"{start_field}_{end_field}"] = []
                 continue
             
-            # 对每个数字进行二次、三次、三次匹配2、四次、五次匹配、版本匹配（如果配置了）
+            # 对每个数字进行二次、三次、三次匹配2、四次、五次匹配、六次匹配、版本匹配（如果配置了）
             final_results = []
             secondary_config = pattern_config.get("secondary_match", None)
             third_config = pattern_config.get("third_match", None)
             third_config_2 = pattern_config.get("third_match_2", None)
             fourth_config = pattern_config.get("fourth_match", None)
             fifth_config = pattern_config.get("fifth_match", None)
+            sixth_config = pattern_config.get("sixth_match", None)
             match_version_config = pattern_config.get("match_version", None)
             
             for number in numbers:
@@ -452,7 +479,8 @@ class DataProcessor:
                     "third_match": [],
                     "third_match_2": [],
                     "fourth_match": [],
-                    "fifth_match": []
+                    "fifth_match": [],
+                    "sixth_match": []
                 }
                 
                 # 进行二次匹配（保留多个捕获组）
@@ -507,6 +535,17 @@ class DataProcessor:
                         else:
                             if fifth_matches and fifth_matches[0]:
                                 match_data["fifth_match"] = fifth_matches[0]
+                
+                # 进行六次匹配（温度匹配）
+                if sixth_config:
+                    sixth_matches = self._match_secondary_pattern_detailed(content, number, sixth_config)
+                    if sixth_matches:
+                        # 如果match_all为True，保留所有匹配，否则只取第一个
+                        if sixth_config.get("match_all", False):
+                            match_data["sixth_match"] = [" | ".join(" ".join(str(m) for m in match) for match in sixth_matches)]
+                        else:
+                            if sixth_matches and sixth_matches[0]:
+                                match_data["sixth_match"] = sixth_matches[0]
                 
                 final_results.append(match_data)
             
@@ -672,24 +711,36 @@ class DataProcessor:
                                 version_str = match_version[0] if len(match_version) > 0 else ""
                                 row_data['版本号'] = version_str
                                 
-                                # 根据版本号决定时间和code列
+                                # 根据版本号决定时间列
                                 if version_str == "R024":
                                     # 如果版本号是R024：
                                     # third_match_2的列名叫做时间
                                     third_match_2 = match_data.get("third_match_2", [])
                                     row_data['时间'] = " ".join(third_match_2) if third_match_2 else ""
-                                    # fifth_match作为code
-                                    fifth_match = match_data.get("fifth_match", [])
-                                    row_data['code'] = " ".join(fifth_match) if fifth_match else ""
                                     # 忽略third_match
                                 else:
                                     # 如果版本号不为R024：
                                     # third_match的列名叫做时间
                                     third_match = match_data.get("third_match", [])
                                     row_data['时间'] = " ".join(third_match) if third_match else ""
+                                
+                                # 处理sixth_match（温度），单独列一列
+                                sixth_match = match_data.get("sixth_match", [])
+                                row_data['温度'] = " ".join(sixth_match) if sixth_match else ""
+                                
+                                # 根据版本号决定code列（放在最后）
+                                if version_str == "R024":
+                                    # fifth_match作为code
+                                    fifth_match = match_data.get("fifth_match", [])
+                                    row_data['code'] = " ".join(fifth_match) if fifth_match else ""
+                                else:
                                     # fourth_match作为code，需要格式化
                                     fourth_match = match_data.get("fourth_match", [])
                                     row_data['code'] = self._format_fourth_match(fourth_match) if fourth_match else ""
+                                
+                                # 检查 code 中是否包含 0x1 到 0x16 之间的值
+                                code_value = row_data.get('code', '')
+                                row_data['code_hex_check'] = self._check_code_contains_hex_range(code_value)
                                 
                                 data.append(row_data)
                         
