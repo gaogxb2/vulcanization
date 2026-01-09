@@ -402,8 +402,13 @@ class DataProcessor:
             return result
         
         # 正则表达式匹配 "macro X lane Y 0xZ" 格式
-        # 支持格式：macro 1 lane 1 0x11 或 macro1 lane1 0x11
-        pattern = r'macro\s*(\d+)\s+lane\s*(\d+)\s+(0x[0-9A-Fa-f]+)'
+        # 支持格式：
+        # - macro 1 lane 1 0x11 (有空格)
+        # - macro1 lane1 0x11 (macro和数字之间无空格，lane和数字之间无空格)
+        # - macro1 lane 1 0x11 (macro和数字之间无空格，lane和数字之间有空格)
+        # - macro 1lane1 0x11 (macro和数字之间有空格，lane和数字之间无空格)
+        # 使用 \s* 允许0个或多个空白字符，\s+ 确保lane前至少有一个分隔（空格或边界）
+        pattern = r'macro\s*(\d+)\s*lane\s*(\d+)\s+(0x[0-9A-Fa-f]+)'
         matches = re.findall(pattern, code)
         
         for match in matches:
