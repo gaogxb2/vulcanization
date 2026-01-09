@@ -48,18 +48,15 @@ class DataProcessor:
         except json.JSONDecodeError as e:
             raise ValueError(f"配置文件格式错误: {e}")
     
-    def should_analyze(self, file_path: str, file_item: Path = None) -> bool:
+    def _check_path_keywords_match(self, file_path: str) -> bool:
         """
-        判断文件路径是否应该被分析
-        只有当路径包含所有配置的关键词时才会被分析
-        如果配置了用于过滤的匹配项，还需要检查文件内容是否匹配
+        检查文件路径是否匹配到配置的关键词
         
         Args:
             file_path: 文件路径（相对路径或绝对路径）
-            file_item: 文件Path对象，用于读取文件内容（可选）
             
         Returns:
-            True表示应该分析，False表示跳过
+            True表示匹配到关键词，False表示未匹配
         """
         path_keywords_config = self.config.get("path_keywords", {})
         
@@ -76,12 +73,34 @@ class DataProcessor:
             # 字符串数组格式（向后兼容）：默认use_for_filter为true
             filter_keywords = [k for k in path_keywords_config if isinstance(k, str)]
         
+        # 如果没有配置关键词，认为匹配（不删除）
+        if not filter_keywords:
+            return True
+        
         # 检查路径中是否包含所有用于过滤的关键词
-        if filter_keywords:
-            file_path_lower = file_path.lower()
-            for keyword in filter_keywords:
-                if keyword and keyword.lower() not in file_path_lower:
-                    return False
+        file_path_lower = file_path.lower()
+        for keyword in filter_keywords:
+            if keyword and keyword.lower() not in file_path_lower:
+                return False
+        
+        return True
+    
+    def should_analyze(self, file_path: str, file_item: Path = None) -> bool:
+        """
+        判断文件路径是否应该被分析
+        只有当路径包含所有配置的关键词时才会被分析
+        如果配置了用于过滤的匹配项，还需要检查文件内容是否匹配
+        
+        Args:
+            file_path: 文件路径（相对路径或绝对路径）
+            file_item: 文件Path对象，用于读取文件内容（可选）
+            
+        Returns:
+            True表示应该分析，False表示跳过
+        """
+        # 检查路径关键词匹配
+        if not self._check_path_keywords_match(file_path):
+            return False
         
         # 检查用于过滤的匹配项
         extract_patterns = self.config.get("extract_patterns", [])
@@ -368,6 +387,87 @@ class DataProcessor:
         
         return " ".join(fourth_match)
     
+    def _parse_code_macro_lane(self, code: str) -> Dict[str, str]:
+        """
+        解析code值，提取所有 macro X lane Y 0xZ 格式的内容
+        
+        Args:
+            code: code值字符串，可能包含多个用 | 分隔的项
+            
+        Returns:
+            字典，键为 "macro X lane Y"，值为 "0xZ"
+        """
+        result = {}
+        if not code:
+            return result
+        
+        # 正则表达式匹配 "macro X lane Y 0xZ" 格式
+        # 支持格式：macro 1 lane 1 0x11 或 macro1 lane1 0x11
+        pattern = r'macro\s*(\d+)\s+lane\s*(\d+)\s+(0x[0-9A-Fa-f]+)'
+        matches = re.findall(pattern, code)
+        
+        for match in matches:
+            macro_num = match[0]
+            lane_num = match[1]
+            hex_value = match[2]
+            column_name = f"macro {macro_num} lane {lane_num}"
+            result[column_name] = hex_value
+        
+        return result
+    
+    def _add_dynamic_macro_lane_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        根据code列的值，动态添加 macro X lane Y 列
+        
+        Args:
+            df: 原始DataFrame
+            
+        Returns:
+            添加了动态列的DataFrame
+        """
+        if df.empty or 'code' not in df.columns:
+            return df
+        
+        # 收集所有唯一的 macro X lane Y 组合
+        all_macro_lane_columns = set()
+        row_macro_lane_data = []
+        
+        for idx, row in df.iterrows():
+            code_value = str(row.get('code', ''))
+            parsed = self._parse_code_macro_lane(code_value)
+            all_macro_lane_columns.update(parsed.keys())
+            row_macro_lane_data.append(parsed)
+        
+        # 按macro和lane的数字排序（macro小的在左边，macro相同时lane小的在左边）
+        sorted_columns = sorted(all_macro_lane_columns, key=lambda x: (
+            int(re.search(r'macro\s*(\d+)', x).group(1)),
+            int(re.search(r'lane\s*(\d+)', x).group(1))
+        ))
+        
+        # 为每个列创建数据
+        for col_name in sorted_columns:
+            col_data = []
+            for parsed in row_macro_lane_data:
+                col_data.append(parsed.get(col_name, ''))
+            df[col_name] = col_data
+        
+        # 重新调整列顺序：将动态列放在code列之后，按macro和lane排序
+        if sorted_columns:
+            # 获取当前所有列
+            all_columns = list(df.columns)
+            
+            # 找到code列的位置
+            if 'code' in all_columns:
+                code_index = all_columns.index('code')
+                # 分离动态列和其他列
+                other_columns = [col for col in all_columns if col not in sorted_columns]
+                # 重新排列：code列之前的列 + code列 + 动态列（已排序）+ code列之后的列
+                new_column_order = other_columns[:code_index] + ['code'] + sorted_columns + other_columns[code_index+1:]
+                # 重新排列DataFrame的列
+                df = df[new_column_order]
+        
+        return df
+    
     def _check_code_contains_hex_range(self, code: str) -> int:
         """
         检查 code 中是否包含 0x1 到 0x16 之间的任意值
@@ -633,13 +733,14 @@ class DataProcessor:
                 # 跳过无法处理的zip文件
                 continue
     
-    def analyze_folder(self, folder_path: str, extract_zip: bool = False) -> pd.DataFrame:
+    def analyze_folder(self, folder_path: str, extract_zip: bool = False, delete_unmatched: bool = None) -> pd.DataFrame:
         """
         分析文件夹内容
         
         Args:
             folder_path: 要分析的文件夹路径
             extract_zip: 是否解压zip文件
+            delete_unmatched: 是否删除未匹配的文件，如果为None则从配置文件读取
             
         Returns:
             包含分析结果的DataFrame
@@ -658,6 +759,19 @@ class DataProcessor:
             try:
                 # 获取相对路径用于关键词匹配
                 relative_path = str(item.relative_to(folder))
+                
+                # 如果文件路径没匹配到keyword，且UI勾选了删除选项，则删除该文件
+                # delete_unmatched参数由UI传入，如果为None则默认为False（不删除）
+                delete_if_no_match = delete_unmatched if delete_unmatched is not None else False
+                if item.is_file() and delete_if_no_match:
+                    if not self._check_path_keywords_match(relative_path):
+                        try:
+                            item.unlink()
+                            print(f"删除未匹配文件: {relative_path}")
+                            continue
+                        except (PermissionError, OSError) as e:
+                            print(f"无法删除文件 {relative_path}: {e}")
+                            continue
                 
                 # 检查是否应该分析此文件（传入Path对象以便检查文件内容）
                 if not self.should_analyze(relative_path, item):
@@ -728,19 +842,20 @@ class DataProcessor:
                                 sixth_match = match_data.get("sixth_match", [])
                                 row_data['温度'] = " ".join(sixth_match) if sixth_match else ""
                                 
-                                # 根据版本号决定code列（放在最后）
+                                # 根据版本号决定code值（先计算，不添加到字典）
                                 if version_str == "R024":
                                     # fifth_match作为code
                                     fifth_match = match_data.get("fifth_match", [])
-                                    row_data['code'] = " ".join(fifth_match) if fifth_match else ""
+                                    code_value = " ".join(fifth_match) if fifth_match else ""
                                 else:
                                     # fourth_match作为code，需要格式化
                                     fourth_match = match_data.get("fourth_match", [])
-                                    row_data['code'] = self._format_fourth_match(fourth_match) if fourth_match else ""
+                                    code_value = self._format_fourth_match(fourth_match) if fourth_match else ""
                                 
-                                # 检查 code 中是否包含 0x1 到 0x16 之间的值
-                                code_value = row_data.get('code', '')
+                                # 检查 code 中是否包含 0x1 到 0x16 之间的值（先添加code_hex_check）
                                 row_data['code_hex_check'] = self._check_code_contains_hex_range(code_value)
+                                # 然后添加code列
+                                row_data['code'] = code_value
                                 
                                 data.append(row_data)
                         
@@ -762,7 +877,12 @@ class DataProcessor:
                 # 跳过无法访问的文件
                 continue
         
-        return pd.DataFrame(data)
+        df = pd.DataFrame(data)
+        
+        # 根据code列动态添加 macro X lane Y 列
+        df = self._add_dynamic_macro_lane_columns(df)
+        
+        return df
     
     def save_to_excel(self, df: pd.DataFrame, output_path: str) -> None:
         """

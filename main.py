@@ -14,6 +14,7 @@ class FolderAnalyzerApp:
         self.selected_folder = None
         self.output_path = None
         self.extract_zip_var = tk.BooleanVar(value=False)
+        self.delete_unmatched_var = tk.BooleanVar(value=False)
         
         self.setup_ui()
     
@@ -59,7 +60,7 @@ class FolderAnalyzerApp:
                                command=self.select_output_path, width=10)
         output_btn.pack(side=tk.RIGHT)
         
-        # 解压选项
+        # 选项区域
         option_frame = tk.Frame(self.root)
         option_frame.pack(pady=10, padx=20, fill=tk.X)
         
@@ -68,6 +69,12 @@ class FolderAnalyzerApp:
                                           variable=self.extract_zip_var,
                                           font=("Arial", 10))
         extract_checkbox.pack(anchor=tk.W)
+        
+        delete_checkbox = tk.Checkbutton(option_frame, 
+                                         text="删除未匹配到关键词的文件",
+                                         variable=self.delete_unmatched_var,
+                                         font=("Arial", 10))
+        delete_checkbox.pack(anchor=tk.W, pady=(5, 0))
         
         # 分析按钮
         self.analyze_btn = tk.Button(self.root, text="开始分析", 
@@ -127,7 +134,8 @@ class FolderAnalyzerApp:
             # 使用DataProcessor进行数据处理
             processor = DataProcessor()
             extract_zip = self.extract_zip_var.get()
-            df = processor.analyze_folder(self.selected_folder, extract_zip=extract_zip)
+            delete_unmatched = self.delete_unmatched_var.get()
+            df = processor.analyze_folder(self.selected_folder, extract_zip=extract_zip, delete_unmatched=delete_unmatched)
             
             # 如果数据为空
             if df.empty:
