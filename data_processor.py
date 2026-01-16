@@ -916,7 +916,7 @@ class DataProcessor:
         """
         处理macro x lane y列：
         1. 将十六进制值转换为十进制
-        2. 计算每列的max, min, average并添加新列
+        2. 将macro x lane y列的数据拆分成多行，每行包含macro、lane和code值
         
         Args:
             df: 原始DataFrame
@@ -934,106 +934,90 @@ class DataProcessor:
         if not macro_lane_columns:
             return df
         
-        # 存储统计列名
-        stats_columns = []
+        # 收集所有非macro x lane y列（同时排除原来的code列，因为会被新的code列替代）
+        non_macro_lane_columns = [col for col in df.columns if col not in macro_lane_columns and col != 'code']
         
-        # 处理每个macro x lane y列
-        for col_name in macro_lane_columns:
-            # 1. 将十六进制值转换为十进制
-            for idx, value in enumerate(df[col_name]):
+        # 存储新的行数据
+        new_rows = []
+        
+        # 遍历每一行
+        for idx, row in df.iterrows():
+            # 获取该行的所有macro x lane y数据
+            macro_lane_data = []
+            
+            for col_name in macro_lane_columns:
+                value = row[col_name]
                 if value and str(value).strip():
-                    decimal_val = self._convert_hex_to_decimal(str(value))
-                    if decimal_val is not None:
-                        df.at[idx, col_name] = decimal_val
+                    # 解析macro和lane数字
+                    macro_match = re.search(r'macro\s*(\d+)', col_name)
+                    lane_match = re.search(r'lane\s*(\d+)', col_name)
+                    
+                    if macro_match and lane_match:
+                        macro_num = int(macro_match.group(1))
+                        lane_num = int(lane_match.group(1))
+                        
+                        # 将十六进制值转换为十进制，如果已经是数字则直接使用
+                        decimal_val = self._convert_hex_to_decimal(str(value))
+                        if decimal_val is None:
+                            # 如果不是十六进制格式，尝试直接转换为数字
+                            try:
+                                if pd.notna(value):
+                                    decimal_val = int(float(str(value)))
+                            except (ValueError, TypeError):
+                                # 如果转换失败，跳过这个值
+                                continue
+                        
+                        if decimal_val is not None:
+                            macro_lane_data.append({
+                                'macro': macro_num,
+                                'lane': lane_num,
+                                'code': decimal_val
+                            })
             
-            # 2. 计算统计值（只计算有效值）
-            # 获取列中的所有数值（排除空值和NaN）
-            numeric_values = []
-            for value in df[col_name]:
-                if pd.notna(value) and value != '':
-                    try:
-                        # 尝试转换为数值
-                        num_val = float(value) if not isinstance(value, (int, float)) else value
-                        numeric_values.append(num_val)
-                    except (ValueError, TypeError):
-                        pass
-            
-            if numeric_values:
-                max_val = max(numeric_values)
-                min_val = min(numeric_values)
-                avg_val = sum(numeric_values) / len(numeric_values)
-                
-                # 添加统计列
-                max_col_name = f"{col_name}_max"
-                min_col_name = f"{col_name}_min"
-                avg_col_name = f"{col_name}_average"
-                
-                # 为每行填充统计值
-                df[max_col_name] = max_val
-                df[min_col_name] = min_val
-                df[avg_col_name] = avg_val
-                
-                stats_columns.extend([max_col_name, min_col_name, avg_col_name])
+            # 如果有macro x lane y数据，为每个macro-lane组合创建一行
+            if macro_lane_data:
+                for ml_data in macro_lane_data:
+                    new_row = {}
+                    # 复制所有非macro x lane y列的数据
+                    for col in non_macro_lane_columns:
+                        new_row[col] = row[col]
+                    # 添加macro、lane和code列
+                    new_row['macro'] = ml_data['macro']
+                    new_row['lane'] = ml_data['lane']
+                    new_row['code'] = ml_data['code']
+                    new_rows.append(new_row)
+            else:
+                # 如果没有macro x lane y数据，保留原行（不包含macro、lane、code列）
+                new_row = {}
+                for col in non_macro_lane_columns:
+                    new_row[col] = row[col]
+                new_rows.append(new_row)
         
-        # 重新排列列顺序：将统计列放在对应的macro x lane y列之后
-        all_columns = list(df.columns)
+        # 创建新的DataFrame
+        new_df = pd.DataFrame(new_rows)
+        
+        # 重新排列列顺序：将macro、lane、code列放在一起
+        all_columns = list(new_df.columns)
+        
+        # 找到原来的code列的位置（如果存在，这是旧的code列，现在可能已经不需要了）
+        # 但我们主要关注新的macro、lane、code列的位置
         new_column_order = []
-        processed_columns = set()
         
-        # 找到code列的位置（如果存在）
-        code_index = None
+        # 先添加所有非macro/lane/code列
+        for col in all_columns:
+            if col not in ['macro', 'lane', 'code']:
+                new_column_order.append(col)
+        
+        # 添加macro、lane、code列（如果存在）
+        if 'macro' in all_columns:
+            new_column_order.append('macro')
+        if 'lane' in all_columns:
+            new_column_order.append('lane')
         if 'code' in all_columns:
-            code_index = all_columns.index('code')
-        
-        # 先添加code列之前的所有列
-        if code_index is not None:
-            for i in range(code_index):
-                col = all_columns[i]
-                if col not in processed_columns:
-                    new_column_order.append(col)
-                    processed_columns.add(col)
-        
-        # 添加code列
-        if code_index is not None:
             new_column_order.append('code')
-            processed_columns.add('code')
         
-        # 按macro和lane排序macro x lane y列
-        sorted_macro_lane_columns = sorted(macro_lane_columns, key=lambda x: (
-            int(re.search(r'macro\s*(\d+)', x).group(1)),
-            int(re.search(r'lane\s*(\d+)', x).group(1))
-        ))
-        
-        # 添加macro x lane y列及其统计列
-        for col_name in sorted_macro_lane_columns:
-            if col_name in all_columns and col_name not in processed_columns:
-                new_column_order.append(col_name)
-                processed_columns.add(col_name)
-                # 添加对应的统计列
-                max_col = f"{col_name}_max"
-                min_col = f"{col_name}_min"
-                avg_col = f"{col_name}_average"
-                for stat_col in [max_col, min_col, avg_col]:
-                    if stat_col in all_columns and stat_col not in processed_columns:
-                        new_column_order.append(stat_col)
-                        processed_columns.add(stat_col)
-        
-        # 添加剩余的列（code列之后的非macro x lane y列）
-        if code_index is not None:
-            for i in range(code_index + 1, len(all_columns)):
-                col = all_columns[i]
-                if col not in processed_columns:
-                    new_column_order.append(col)
-                    processed_columns.add(col)
-        else:
-            # 如果没有code列，添加所有未处理的列
-            for col in all_columns:
-                if col not in processed_columns:
-                    new_column_order.append(col)
-                    processed_columns.add(col)
-        
-        df = df[new_column_order]
-        return df
+        new_df = new_df[new_column_order]
+        return new_df
     
     def save_to_excel(self, df: pd.DataFrame, output_path: str) -> None:
         """
