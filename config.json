@@ -29,7 +29,7 @@
             "third_match": {
                 "start_field": "display board-reset",
                 "end_field": "</Message>",
-                "regex": "Board {number} reset information:\\r?\\n.*(DATE:\\d+-\\d+-\\d+)",
+                "regex": "Board {number} reset information:\\r?\\n.*?(DATE:\\d+-\\d+-\\d+)",
                 "description": "对每个数字进行二次匹配，在display elabel brief和</Message>之间匹配MPU+数字+空格+字母数字"
             },
             "third_match_2": {

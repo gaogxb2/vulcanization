@@ -405,9 +405,10 @@ class DataProcessor:
         # 支持格式：
         # - macro 1 lane 1 0x11 (有空格)
         # - macro1 lane1 0x11 (macro和数字之间无空格，lane和数字之间无空格)
+        # - macro1lane1 0x11 (macro和数字之间无空格，lane和数字之间无空格，macro和lane之间也无空格)
         # - macro1 lane 1 0x11 (macro和数字之间无空格，lane和数字之间有空格)
         # - macro 1lane1 0x11 (macro和数字之间有空格，lane和数字之间无空格)
-        # 使用 \s* 允许0个或多个空白字符，\s+ 确保lane前至少有一个分隔（空格或边界）
+        # 使用 \s* 允许0个或多个空白字符，确保完全支持无空格格式
         pattern = r'macro\s*(\d+)\s*lane\s*(\d+)\s+(0x[0-9A-Fa-f]+)'
         matches = re.findall(pattern, code)
         
@@ -889,6 +890,151 @@ class DataProcessor:
         
         return df
     
+    def _convert_hex_to_decimal(self, value: str) -> int:
+        """
+        将十六进制字符串转换为十进制整数
+        
+        Args:
+            value: 十六进制字符串（如 "0x11"）
+            
+        Returns:
+            十进制整数，如果转换失败返回None
+        """
+        if not value or not isinstance(value, str):
+            return None
+        
+        value = value.strip()
+        # 检查是否是十六进制格式（0x开头）
+        if value.startswith('0x') or value.startswith('0X'):
+            try:
+                return int(value, 16)
+            except (ValueError, TypeError):
+                return None
+        return None
+    
+    def _process_macro_lane_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        处理macro x lane y列：
+        1. 将十六进制值转换为十进制
+        2. 计算每列的max, min, average并添加新列
+        
+        Args:
+            df: 原始DataFrame
+            
+        Returns:
+            处理后的DataFrame
+        """
+        if df.empty:
+            return df
+        
+        # 找到所有macro x lane y列（列名格式：macro X lane Y）
+        macro_lane_pattern = re.compile(r'^macro\s+\d+\s+lane\s+\d+$')
+        macro_lane_columns = [col for col in df.columns if macro_lane_pattern.match(str(col))]
+        
+        if not macro_lane_columns:
+            return df
+        
+        # 存储统计列名
+        stats_columns = []
+        
+        # 处理每个macro x lane y列
+        for col_name in macro_lane_columns:
+            # 1. 将十六进制值转换为十进制
+            for idx, value in enumerate(df[col_name]):
+                if value and str(value).strip():
+                    decimal_val = self._convert_hex_to_decimal(str(value))
+                    if decimal_val is not None:
+                        df.at[idx, col_name] = decimal_val
+            
+            # 2. 计算统计值（只计算有效值）
+            # 获取列中的所有数值（排除空值和NaN）
+            numeric_values = []
+            for value in df[col_name]:
+                if pd.notna(value) and value != '':
+                    try:
+                        # 尝试转换为数值
+                        num_val = float(value) if not isinstance(value, (int, float)) else value
+                        numeric_values.append(num_val)
+                    except (ValueError, TypeError):
+                        pass
+            
+            if numeric_values:
+                max_val = max(numeric_values)
+                min_val = min(numeric_values)
+                avg_val = sum(numeric_values) / len(numeric_values)
+                
+                # 添加统计列
+                max_col_name = f"{col_name}_max"
+                min_col_name = f"{col_name}_min"
+                avg_col_name = f"{col_name}_average"
+                
+                # 为每行填充统计值
+                df[max_col_name] = max_val
+                df[min_col_name] = min_val
+                df[avg_col_name] = avg_val
+                
+                stats_columns.extend([max_col_name, min_col_name, avg_col_name])
+        
+        # 重新排列列顺序：将统计列放在对应的macro x lane y列之后
+        all_columns = list(df.columns)
+        new_column_order = []
+        processed_columns = set()
+        
+        # 找到code列的位置（如果存在）
+        code_index = None
+        if 'code' in all_columns:
+            code_index = all_columns.index('code')
+        
+        # 先添加code列之前的所有列
+        if code_index is not None:
+            for i in range(code_index):
+                col = all_columns[i]
+                if col not in processed_columns:
+                    new_column_order.append(col)
+                    processed_columns.add(col)
+        
+        # 添加code列
+        if code_index is not None:
+            new_column_order.append('code')
+            processed_columns.add('code')
+        
+        # 按macro和lane排序macro x lane y列
+        sorted_macro_lane_columns = sorted(macro_lane_columns, key=lambda x: (
+            int(re.search(r'macro\s*(\d+)', x).group(1)),
+            int(re.search(r'lane\s*(\d+)', x).group(1))
+        ))
+        
+        # 添加macro x lane y列及其统计列
+        for col_name in sorted_macro_lane_columns:
+            if col_name in all_columns and col_name not in processed_columns:
+                new_column_order.append(col_name)
+                processed_columns.add(col_name)
+                # 添加对应的统计列
+                max_col = f"{col_name}_max"
+                min_col = f"{col_name}_min"
+                avg_col = f"{col_name}_average"
+                for stat_col in [max_col, min_col, avg_col]:
+                    if stat_col in all_columns and stat_col not in processed_columns:
+                        new_column_order.append(stat_col)
+                        processed_columns.add(stat_col)
+        
+        # 添加剩余的列（code列之后的非macro x lane y列）
+        if code_index is not None:
+            for i in range(code_index + 1, len(all_columns)):
+                col = all_columns[i]
+                if col not in processed_columns:
+                    new_column_order.append(col)
+                    processed_columns.add(col)
+        else:
+            # 如果没有code列，添加所有未处理的列
+            for col in all_columns:
+                if col not in processed_columns:
+                    new_column_order.append(col)
+                    processed_columns.add(col)
+        
+        df = df[new_column_order]
+        return df
+    
     def save_to_excel(self, df: pd.DataFrame, output_path: str) -> None:
         """
         将DataFrame保存为Excel文件
@@ -899,6 +1045,19 @@ class DataProcessor:
         """
         if df.empty:
             raise ValueError("数据为空，无法保存")
+        
+        # 在保存前处理macro x lane y列
+        df = self._process_macro_lane_columns(df)
+        
+        # 去重：如果文件名和文件大小相同，只保留一条记录
+        if '文件名' in df.columns and '文件大小(字节)' in df.columns:
+            # 记录去重前的行数
+            before_count = len(df)
+            # 基于文件名和文件大小去重，保留第一条记录
+            df = df.drop_duplicates(subset=['文件名', '文件大小(字节)'], keep='first')
+            after_count = len(df)
+            if before_count != after_count:
+                print(f"去重完成：从 {before_count} 条记录减少到 {after_count} 条记录")
         
         df.to_excel(output_path, index=False, engine='openpyxl')
 

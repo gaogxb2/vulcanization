@@ -65,13 +65,13 @@ class FolderAnalyzerApp:
         option_frame.pack(pady=10, padx=20, fill=tk.X)
         
         extract_checkbox = tk.Checkbutton(option_frame, 
-                                          text="自动解压zip文件",
+                                          text="自动解压并在解压后删除zip文件",
                                           variable=self.extract_zip_var,
                                           font=("Arial", 10))
         extract_checkbox.pack(anchor=tk.W)
         
         delete_checkbox = tk.Checkbutton(option_frame, 
-                                         text="删除未匹配到关键词的文件",
+                                         text="【磁盘清理】删除选中文件夹内未匹配到关键词的文件",
                                          variable=self.delete_unmatched_var,
                                          font=("Arial", 10))
         delete_checkbox.pack(anchor=tk.W, pady=(5, 0))
