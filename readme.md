@@ -78,6 +78,135 @@ python main.py
 输出 Excel 文件
 ```
 
+## 原始数据说明
+
+工具处理的**原始数据**是网络设备（如华为交换机/路由器）运维采集后导出的 **工程师报告 `.txt` 文件**，本质上是设备 CLI 命令的回显日志，不是 Excel 或结构化 JSON。
+
+### 文件特征
+
+| 特征 | 说明 |
+|------|------|
+| 格式 | 纯文本 `.txt` |
+| 路径/命名 | 通常包含 `工程师报告` 关键词（工具默认只分析这类文件） |
+| 存放方式 | 可直接放在文件夹中，也可能嵌套在 zip 压缩包内 |
+| 段落结构 | 由多条 `display xxx` 等命令输出组成，每段以 `</Message>` 标记结束 |
+| 槽位关联 | 多数段落与槽位号绑定，一份报告可包含多个槽位（如 44、45）的数据 |
+| 版本差异 | R024 与非 R024 设备在时间、code 来源等字段上规则不同 |
+
+### 原始日志中的命令段落
+
+一份工程师报告通常包含以下命令回显段落，工具从中按需提取字段：
+
+#### 1. `display device` — 设备/槽位信息
+
+```
+display device
+...
+44 D1SCAC
+45 D1SCAB
+...
+</Message>
+```
+
+包含槽位号（如 `44`）和板卡类型（如 `D1`、`E1` 开头）。工具从这里提取**槽位号**，作为后续所有匹配的 `{number}`。
+
+#### 2. `display elabel brief` — 电子标签/条码
+
+```
+display elabel brief ...
+MPU44 AAFESF2 F32F23CE2F2 2F332
+</Message>
+```
+
+包含 MPU + 槽位号及三段条码/序列号信息，工具提取为 **条码1 / 条码2 / 条码3**。
+
+#### 3. `display startup` — 软件版本
+
+```
+display startup | no-more
+...R24...
+</Message>
+```
+
+包含设备启动/版本信息（如 `R024`），工具提取 **版本号**，并决定后续 code 的提取路径。
+
+#### 4. `display board-reset` — 板卡复位记录（非 R024 版本）
+
+```
+display board-reset all
+
+Board 44 reset information:
+-- 1. DATE:2025-01-01 TIME:123111
+...
+</Message>
+```
+
+包含指定槽位的复位历史，含 **DATE**（日期）和 **TIME**（时间）。同一段内可能有多条记录，工具当前配置取**第一个 DATE** 作为时间列。
+
+#### 5. `display clock` — 系统时钟（R024 版本）
+
+```
+display clock | no more
+2025-01-01
+</Message>
+```
+
+包含当前系统日期。版本号为 **R024** 时，用此日期作为**时间**列，而非 board-reset。
+
+#### 6. `module cpu_serdes_info` — Serdes 详细信息（非 R024 的 code 来源）
+
+```
+44 module cpu_serdes_info ...
+
+macro3,ds3
+...
+DS_TX:0x1111,0x1111,...,0x11112,0x1111,...
+macro4,ds4
+...
+DS_TX:0x1111,...
+</Message>
+```
+
+包含 macro 编号与 ds（lane）编号（如 `macro3,ds3`），以及 `DS_TX:` 后一长串逗号分隔的十六进制值。工具取第 27 个字段作为 code 原始值，再取 bit0～bit5 格式化为 `macroX laneY 0xP`。
+
+#### 7. `serdes slot` — Serdes code（R024 版本的 code 来源）
+
+```
+serdes slot 44
+macro 0 lane 0: code-up:0x0;
+macro 1 lane 0: code-up:0x0;
+macro 3 lane 0: code-up:0x0;
+</Message>
+```
+
+包含指定槽位下各 macro/lane 的 **code-up** 十六进制值。版本号为 **R024** 时，直接从这里提取 code。
+
+#### 8. `display temperature` — 温度信息
+
+```
+display temperature | no-more
+Base-Board, Unit:xxx, Slot 44
+...
+</Message>
+```
+
+包含指定槽位对应板卡的温度读数，工具提取为 **温度** 列。
+
+### 工具使用了哪些原始内容
+
+**会解析并写入 Excel 的：**
+
+- 文件路径、文件名、大小、修改时间
+- 槽位号、条码、版本号、时间、温度
+- Serdes 的 macro / lane / code
+
+**原始日志中有、但当前未提取的：**
+
+- `display device` 中的板卡型号细节（如 `D1SCAC`）
+- board-reset 中的 **TIME** 字段（只取 DATE）
+- cpu_serdes_info 中 DS_TX 除第 27 个字段外的其他值
+- 各段落中的大量中间调试文本
+
 ## 数据提取说明
 
 解析规则在 `config.json` 的 `extract_patterns` 中配置。当前默认规则针对华为设备工程师报告，主要提取以下字段：
@@ -113,7 +242,7 @@ code 值来源取决于 **版本号**：
 1. 从 code 字符串解析所有 `macro X lane Y 0xZ` 组合
 2. 每个 macro-lane 组合拆成独立一行，新增 `macro`、`lane`、`code` 三列
 3. 十六进制 code（如 `0x11`）转换为十进制（如 `17`）
-4. 按「文件名 + 文件大小(字节)」去重，相同文件只保留一条
+4. 按「文件名 + 文件大小(字节) + macro + lane」去重，相同组合只保留一条
 
 **示例：**
 
